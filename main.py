@@ -58,6 +58,7 @@ def run_checkup():
     log.info("Reading sensor data (simulated)...")
     sensor_data = read_sensors()
     log.info(f"Sensor data: {sensor_data}")
+
     # ── 4. Push to Supabase ───────────────────────────────────────────────────
     log.info("Pushing data to Supabase...")
     food_item_ids = []
