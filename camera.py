@@ -45,3 +45,12 @@ def capture_image() -> str:
         return placeholder
 
 
+def _create_placeholder(path: str):
+    """Creates a minimal JPEG placeholder (solid grey 64x64)."""
+    try:
+        from PIL import Image
+        img = Image.new("RGB", (64, 64), color=(180, 180, 180))
+        img.save(path, "JPEG")
+    except ImportError:
+        # If PIL isn't available, just create an empty file
+        open(path, "w").close()
