@@ -58,3 +58,28 @@ def run_checkup():
     log.info("Reading sensor data (simulated)...")
     sensor_data = read_sensors()
     log.info(f"Sensor data: {sensor_data}")
+    # ── 4. Push to Supabase ───────────────────────────────────────────────────
+    log.info("Pushing data to Supabase...")
+    food_item_ids = []
+
+    for detection in detections:
+        food_id = db.upsert_food_item(user_id, detection, sensor_data)
+        food_item_ids.append((food_id, detection))
+        log.info(f"  [OK] {detection['name']} ({detection['freshness_status']}) -> food_item: {food_id}")
+
+    # ── 5. Log sensor readings per food item ──────────────────────────────────
+    for food_id, _ in food_item_ids:
+        db.insert_sensor_reading(user_id, food_id, sensor_data)
+
+    # ── 6. Generate notifications ─────────────────────────────────────────────
+    notifications = generate_notifications(food_item_ids)
+    for notif in notifications:
+        db.insert_notification(user_id, notif)
+        log.info(f"  [NOTIF] [{notif['severity']}] {notif['title']}")
+
+    log.info("Checkup complete.")
+    log.info(f"Next run in 6 hours.")
+
+if __name__ == "__main__":
+    run_checkup()
+
