@@ -121,6 +121,24 @@ class SupabaseClient:
                 )
             )
 
+    # ── Notifications ──────────────────────────────────────────────────────────
+
+    def insert_notification(self, user_id: str, notif: dict):
+        """Inserts a notification row."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.notifications
+                    (user_id, food_item_id, title, message, severity, is_read, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id, notif.get("food_item_id"),
+                    notif["title"], notif["message"],
+                    notif["severity"], False,
+                    datetime.utcnow().isoformat(),
+                )
+            )
 
     def close(self):
         self.conn.close()
