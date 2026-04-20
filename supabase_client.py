@@ -101,6 +101,27 @@ class SupabaseClient:
 
         return food_id
 
+    # ── Sensor Readings ────────────────────────────────────────────────────────
+
+    def insert_sensor_reading(self, user_id: str, food_item_id: str, sensor_data: dict):
+        """Logs one sensor reading row linked to a food item."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.sensor_readings
+                    (user_id, food_item_id, humidity, temperature, gas_value, recorded_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id, food_item_id,
+                    sensor_data.get("humidity"),
+                    sensor_data.get("temperature"),
+                    sensor_data.get("gas_value"),
+                    datetime.utcnow().isoformat(),
+                )
+            )
+
+
     def close(self):
         self.conn.close()
         log.info("DB connection closed.")
