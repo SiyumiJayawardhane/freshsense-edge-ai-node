@@ -78,7 +78,28 @@ class SupabaseClient:
                     )
                 )
                 log.info(f"Updated food_item: {detection['name']} ({food_id})")
-            
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO public.food_items
+                        (user_id, name, category, image_url, freshness_score, freshness_status,
+                         confidence, estimated_days_to_spoil, storage_tips,
+                         detected_at, created_at, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                    """,
+                    (
+                        user_id, detection["name"], detection["category"],
+                        image_url,
+                        detection["freshness_score"], detection["freshness_status"],
+                        detection["confidence"], detection["estimated_days_to_spoil"],
+                        detection["storage_tips"], now, now, now,
+                    )
+                )
+                food_id = str(cur.fetchone()["id"])
+                log.info(f"Inserted food_item: {detection['name']} ({food_id})")
+
+        return food_id
 
     def close(self):
         self.conn.close()
