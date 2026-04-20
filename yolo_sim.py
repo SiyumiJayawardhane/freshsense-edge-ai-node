@@ -40,6 +40,9 @@ def _score_to_status(score: float) -> str:
         return "spoiled"
 
 
+def _days_to_score(days: int, max_days: int) -> float:
+    ratio = days / max_days
+    return round(min(100, max(0, ratio * 100)), 1)
 
 
 def _load_fridge_items() -> list:
