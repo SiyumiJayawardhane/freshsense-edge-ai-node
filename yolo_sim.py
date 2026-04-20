@@ -55,3 +55,29 @@ def _load_fridge_items() -> list:
     return items
 
 
+def analyze_image(image_path: str) -> list:
+    """
+    Simulates YOLOv5 detection. Detects ALL items in fridge_items.json.
+    Each item gets its own deterministic freshness score based on today's date.
+    """
+    log.info(f"[SIMULATED] Analyzing image: {image_path}")
+
+    fridge_items = _load_fridge_items()
+    if not fridge_items:
+        log.warning("No items in fridge_items.json - nothing to detect.")
+        return []
+
+    base_seed = _image_seed(image_path)
+
+    
+    return detections
+
+
+def _image_seed(image_path: str) -> int:
+    try:
+        with open(image_path, "rb") as f:
+            file_bytes = f.read(1024)
+        h = hashlib.md5(file_bytes).hexdigest()
+    except Exception:
+        h = hashlib.md5(b"placeholder").hexdigest()
+    return int(h[:8], 16)
