@@ -54,3 +54,13 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo "      nano $INSTALL_DIR/.env"
     echo ""
 fi
+
+# ── 6. Systemd service & timer ─────────────────────────────────────────────────
+echo "[6/6] Installing systemd service and timer..."
+
+# Write the service file
+sudo bash -c "cat > /etc/systemd/system/freshguard.service" << 'EOF'
+[Unit]
+Description=FreshGuard Food Freshness Monitor
+After=network-online.target
+Wants=network-online.target
