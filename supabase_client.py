@@ -32,7 +32,25 @@ class SupabaseClient:
             self.conn.autocommit = True
         return self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    
+    # ── Food Items ─────────────────────────────────────────────────────────────
+
+    def upsert_food_item(self, user_id: str, detection: dict, sensor_data: dict) -> str:
+        """
+        Upserts a food_items row for this user+name combo.
+        Returns the food item UUID.
+        """
+        now = datetime.utcnow().isoformat()
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT id FROM public.food_items WHERE user_id = %s AND name = %s LIMIT 1",
+                (user_id, detection["name"])
+            )
+            existing = cur.fetchone()
+
+            image_url = detection.get("image_url")
+
+            
 
     def close(self):
         self.conn.close()
