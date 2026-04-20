@@ -38,7 +38,25 @@ class StorageClient:
         filename = f"{food_name}_{timestamp}.jpg"
         storage_path = f"{user_id}/{filename}"
 
-        
+        try:
+            with open(image_path, "rb") as f:
+                image_data = f.read()
+
+            url = f"{self.base_url}/{self.bucket}/{storage_path}"
+
+            response = requests.post(
+                url,
+                headers={
+                    **self.headers,
+                    "Content-Type": "image/jpeg",
+                    "x-upsert": "true",  # overwrite if exists
+                },
+                data=image_data,
+                timeout=30,
+            )
+
+            
+
         except Exception as e:
             log.warning(f"Image upload error: {e}")
             return None
