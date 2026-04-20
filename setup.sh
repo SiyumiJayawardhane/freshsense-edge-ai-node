@@ -31,3 +31,10 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/logs"
 mkdir -p "$INSTALL_DIR/images"
 
+# Copy project files
+cp -r ./* "$INSTALL_DIR/"
+
+# ── 3. Python virtual environment ─────────────────────────────────────────────
+echo "[3/6] Creating Python virtual environment..."
+python3 -m venv "$VENV_DIR"
+source "$VENV_DIR/bin/activate"
