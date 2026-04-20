@@ -43,3 +43,14 @@ source "$VENV_DIR/bin/activate"
 echo "[4/6] Installing Python packages..."
 pip install --upgrade pip -q
 pip install -r "$INSTALL_DIR/requirements.txt" -q
+
+# ── 5. Environment file ────────────────────────────────────────────────────────
+echo "[5/6] Checking .env file..."
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+    cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+    echo ""
+    echo "    .env file created at $INSTALL_DIR/.env"
+    echo "    Please fill in your Supabase credentials before starting:"
+    echo "      nano $INSTALL_DIR/.env"
+    echo ""
+fi
