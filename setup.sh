@@ -38,3 +38,8 @@ cp -r ./* "$INSTALL_DIR/"
 echo "[3/6] Creating Python virtual environment..."
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
+
+# ── 4. Install Python packages ─────────────────────────────────────────────────
+echo "[4/6] Installing Python packages..."
+pip install --upgrade pip -q
+pip install -r "$INSTALL_DIR/requirements.txt" -q
