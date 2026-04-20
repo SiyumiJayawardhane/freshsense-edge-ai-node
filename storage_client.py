@@ -55,7 +55,13 @@ class StorageClient:
                 timeout=30,
             )
 
-            
+            if response.status_code in (200, 201):
+                public_url = f"{self.supabase_url}/storage/v1/object/public/{self.bucket}/{storage_path}"
+                log.info(f"Image uploaded: {public_url}")
+                return public_url
+            else:
+                log.warning(f"Image upload failed [{response.status_code}]: {response.text}")
+                return None
 
         except Exception as e:
             log.warning(f"Image upload error: {e}")
