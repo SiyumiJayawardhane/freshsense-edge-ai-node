@@ -64,3 +64,16 @@ sudo bash -c "cat > /etc/systemd/system/freshguard.service" << 'EOF'
 Description=FreshGuard Food Freshness Monitor
 After=network-online.target
 Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/freshguard
+ExecStart=/home/pi/freshguard/venv/bin/python /home/pi/freshguard/main.py
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/home/pi/freshguard/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
