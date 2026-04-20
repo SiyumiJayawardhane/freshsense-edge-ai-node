@@ -66,3 +66,30 @@ def _read_humidity() -> float:
     return round(random.uniform(52.0, 74.0), 1)
 
 
+def _read_gas() -> int:
+    """
+    Simulates MQ-135 gas sensor analog value (0–1023 from ADC).
+    Higher values indicate more VOCs / spoilage gases.
+    Normal: 200–400 | Slightly off: 400–600 | Bad: 600+
+    """
+    return random.randint(180, 520)
+
+
+# ── Real sensor stubs (uncomment when hardware is ready) ──────────────────────
+
+# def _read_dht22_real():
+#     import Adafruit_DHT
+#     humidity, temperature = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22, DHT_GPIO_PIN)
+#     if humidity is None or temperature is None:
+#         raise RuntimeError("DHT22 read failed")
+#     return round(temperature, 1), round(humidity, 1)
+
+# def _read_mq_real():
+#     import spidev
+#     spi = spidev.SpiDev()
+#     spi.open(0, 0)
+#     spi.max_speed_hz = 1350000
+#     adc = spi.xfer2([1, (8 + MQ_SPI_CHANNEL) << 4, 0])
+#     data = ((adc[1] & 3) << 8) + adc[2]
+#     spi.close()
+#     return data
