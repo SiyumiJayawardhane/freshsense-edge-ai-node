@@ -23,4 +23,11 @@ sudo apt-get install -y -q \
     libcamera-apps \
     libjpeg-dev \
     zlib1g-dev \
+    libfreetype6-dev
+
+# ── 2. Create install directory ───────────────────────────────────────────────
+echo "[2/6] Setting up directory structure..."
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/logs"
+mkdir -p "$INSTALL_DIR/images"
 
