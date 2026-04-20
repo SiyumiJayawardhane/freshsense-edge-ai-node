@@ -45,3 +45,15 @@ def read_sensors() -> dict:
     }
 
 
+def _read_temperature() -> float:
+    """
+    Simulates DHT22 temperature in Celsius.
+    Real range in a fridge: 2–8°C | Room: 22–30°C
+    Simulates a mixed environment (some fridge, some room).
+    """
+    # Simulate slightly realistic variation across the day
+    hour = datetime.now().hour
+    base = 24.0 if 8 <= hour <= 20 else 22.0  # slightly cooler at night
+    noise = random.uniform(-2.0, 2.0)
+    return round(base + noise, 1)
+
