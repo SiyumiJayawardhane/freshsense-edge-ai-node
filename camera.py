@@ -60,7 +60,7 @@ def capture_image() -> str:
     # Simulate a fridge scene image
     image_path = _generate_fridge_scene(timestamp)
     return image_path
-    
+
  def capture_food_image(food_name: str, freshness_status: str, score: float, days_left: int) -> str:
     """
     Generates a labeled food image for a specific detected item.
@@ -71,6 +71,31 @@ def capture_image() -> str:
     image_path = os.path.join(IMAGE_DIR, f"{food_name}_{timestamp}.jpg")
     _generate_food_image(image_path, food_name, freshness_status, score, days_left)
     return image_path
+
+    def _generate_fridge_scene(timestamp: str) -> str:
+    """Generates a placeholder 'fridge overview' image."""
+    path = os.path.join(IMAGE_DIR, f"scene_{timestamp}.jpg")
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = 800, 500
+        img = Image.new("RGB", (W, H), color=(240, 240, 240))
+        draw = ImageDraw.Draw(img)
+
+        # Background gradient feel
+        for y in range(H):
+            shade = int(220 + (y / H) * 20)
+            draw.line([(0, y), (W, y)], fill=(shade, shade, shade + 5))
+
+        # Title
+        draw.rectangle([0, 0, W, 60], fill=(38, 50, 56))
+        draw.text((20, 18), "FreshGuard - Fridge Scan", fill=(255, 255, 255))
+        draw.text((20, 38), f"Captured: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", fill=(176, 190, 197))
+
+        img.save(path, "JPEG", quality=90)
+        log.info(f"Simulated fridge scene image saved: {path}")
+    except ImportError:
+        open(path, "wb").close()
+    return path
 
 
 
