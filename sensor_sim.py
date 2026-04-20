@@ -57,3 +57,12 @@ def _read_temperature() -> float:
     noise = random.uniform(-2.0, 2.0)
     return round(base + noise, 1)
 
+
+def _read_humidity() -> float:
+    """
+    Simulates DHT22 relative humidity (%).
+    Kitchen/storage: typically 50–75%
+    """
+    return round(random.uniform(52.0, 74.0), 1)
+
+
