@@ -83,3 +83,12 @@ sudo bash -c "cat > /etc/systemd/system/freshguard.timer" << 'EOF'
 [Unit]
 Description=Run FreshGuard every 6 hours
 Requires=freshguard.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+Unit=freshguard.service
+
+[Install]
+WantedBy=timers.target
+EOF
