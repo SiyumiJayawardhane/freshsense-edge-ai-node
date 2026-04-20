@@ -50,6 +50,34 @@ class SupabaseClient:
 
             image_url = detection.get("image_url")
 
+            if existing:
+                food_id = str(existing["id"])
+                cur.execute(
+                    """
+                    UPDATE public.food_items SET
+                        category = %s,
+                        image_url = %s,
+                        freshness_score = %s,
+                        freshness_status = %s,
+                        confidence = %s,
+                        estimated_days_to_spoil = %s,
+                        storage_tips = %s,
+                        detected_at = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (
+                        detection["category"],
+                        image_url,
+                        detection["freshness_score"],
+                        detection["freshness_status"],
+                        detection["confidence"],
+                        detection["estimated_days_to_spoil"],
+                        detection["storage_tips"],
+                        now, now, food_id,
+                    )
+                )
+                log.info(f"Updated food_item: {detection['name']} ({food_id})")
             
 
     def close(self):
