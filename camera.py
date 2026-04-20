@@ -61,7 +61,8 @@ def capture_image() -> str:
     image_path = _generate_fridge_scene(timestamp)
     return image_path
 
- def capture_food_image(food_name: str, freshness_status: str, score: float, days_left: int) -> str:
+
+def capture_food_image(food_name: str, freshness_status: str, score: float, days_left: int) -> str:
     """
     Generates a labeled food image for a specific detected item.
     This is what gets uploaded to Supabase Storage per food item.
@@ -72,7 +73,8 @@ def capture_image() -> str:
     _generate_food_image(image_path, food_name, freshness_status, score, days_left)
     return image_path
 
-    def _generate_fridge_scene(timestamp: str) -> str:
+
+def _generate_fridge_scene(timestamp: str) -> str:
     """Generates a placeholder 'fridge overview' image."""
     path = os.path.join(IMAGE_DIR, f"scene_{timestamp}.jpg")
     try:
@@ -98,9 +100,54 @@ def capture_image() -> str:
     return path
 
 
+def _generate_food_image(path: str, food_name: str, freshness_status: str, score: float, days_left: int):
+    """
+    Generates a per-food labeled image with:
+    - Color-coded background (green/orange/red by freshness)
+    - Food name and freshness details
+    - A colored circle representing the food item
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        W, H = 400, 400
+        colors = STATUS_COLORS.get(freshness_status, STATUS_COLORS["unknown"])
+        bg_color = colors["bg"]
+        text_color = colors["text"]
 
+        img = Image.new("RGB", (W, H), color=(245, 245, 245))
+        draw = ImageDraw.Draw(img)
 
+        # Header bar (colored by status)
+        draw.rectangle([0, 0, W, 80], fill=bg_color)
 
+        # Food name in header
+        draw.text((20, 15), food_name.upper(), fill=text_color)
+        draw.text((20, 45), freshness_status.upper(), fill=text_color)
 
+        # Food icon circle
+        food_color = FOOD_COLORS.get(food_name.lower(), (150, 150, 150))
+        cx, cy, r = W // 2, 185, 80
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=food_color, outline=(200, 200, 200), width=3)
 
+        # Food initial letter in circle
+        draw.text((cx - 20, cy - 28), food_name[0].upper(), fill=(255, 255, 255))
 
+        # Freshness details box
+        draw.rectangle([20, 290, W - 20, 380], fill=(255, 255, 255), outline=(220, 220, 220), width=1)
+        draw.text((35, 300), f"Freshness Score : {score}/100", fill=(50, 50, 50))
+        draw.text((35, 325), f"Days to Spoil   : {days_left} day(s)", fill=(50, 50, 50))
+        draw.text((35, 350), f"Scanned         : {datetime.now().strftime('%Y-%m-%d %H:%M')}", fill=(120, 120, 120))
+
+        # Footer
+        draw.rectangle([0, 385, W, H], fill=(38, 50, 56))
+        draw.text((20, 390), "FreshGuard | Simulated Detection", fill=(120, 144, 156))
+
+        img.save(path, "JPEG", quality=92)
+        log.info(f"Food image generated: {path}")
+
+    except ImportError:
+        log.warning("Pillow not installed — cannot generate food image.")
+        open(path, "wb").close()
+    except Exception as e:
+        log.warning(f"Image generation error: {e}")
+        open(path, "wb").close()
