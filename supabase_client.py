@@ -22,7 +22,18 @@ class SupabaseClient:
         self.conn.autocommit = True
         log.info("PostgreSQL connection established.")
 
+    def _cursor(self):
+        """Returns a cursor, reconnecting if the connection dropped."""
+        try:
+            self.conn.isolation_level  # cheap check
+        except Exception:
+            log.warning("DB connection lost — reconnecting...")
+            self.conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+            self.conn.autocommit = True
+        return self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
     
+
     def close(self):
         self.conn.close()
         log.info("DB connection closed.")
