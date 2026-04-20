@@ -69,7 +69,23 @@ def analyze_image(image_path: str) -> list:
 
     base_seed = _image_seed(image_path)
 
-    
+    detections = []
+    for food in fridge_items:
+        # Each item gets its own seed so they have independent freshness scores
+        item_seed = base_seed ^ hash(food["name"]) ^ datetime.now().toordinal()
+        rng = random.Random(item_seed)
+
+        days_range = food.get("days_range", [1, 7])
+        max_days = days_range[1]
+        days_left = rng.randint(days_range[0], max_days)
+        score = _days_to_score(days_left, max_days)
+        status = _score_to_status(score)
+        confidence = round(rng.uniform(0.72, 0.98), 2)
+
+        
+        detections.append(detection)
+        log.info(f"  -> {food['name']}: {status} (score={score}, days_left={days_left})")
+
     return detections
 
 
