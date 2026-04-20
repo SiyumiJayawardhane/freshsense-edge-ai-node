@@ -92,3 +92,20 @@ Unit=freshguard.service
 [Install]
 WantedBy=timers.target
 EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable freshguard.timer
+sudo systemctl start freshguard.timer
+
+# ── Done ───────────────────────────────────────────────────────────────────────
+echo ""
+echo "================================================"
+echo "  ✅ FreshGuard setup complete!"
+echo "================================================"
+echo ""
+echo "  Edit .env:        nano $INSTALL_DIR/.env"
+echo "  Run now:          cd $INSTALL_DIR && venv/bin/python main.py"
+echo "  Check timer:      sudo systemctl list-timers freshguard.timer"
+echo "  View logs:        journalctl -u freshguard.service -f"
+echo "  Live log file:    tail -f $INSTALL_DIR/logs/freshguard.log"
+echo ""
