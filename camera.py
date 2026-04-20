@@ -60,7 +60,17 @@ def capture_image() -> str:
     # Simulate a fridge scene image
     image_path = _generate_fridge_scene(timestamp)
     return image_path
-
+    
+ def capture_food_image(food_name: str, freshness_status: str, score: float, days_left: int) -> str:
+    """
+    Generates a labeled food image for a specific detected item.
+    This is what gets uploaded to Supabase Storage per food item.
+    """
+    os.makedirs(IMAGE_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_path = os.path.join(IMAGE_DIR, f"{food_name}_{timestamp}.jpg")
+    _generate_food_image(image_path, food_name, freshness_status, score, days_left)
+    return image_path
 
 
 
