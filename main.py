@@ -67,8 +67,8 @@ def run_checkup():
     # ── 4. Per-food: generate image, upload, upsert to DB ─────────────────────
     log.info("Processing each detected food item...")
     food_item_ids = []
-    
- for detection in detections:
+
+    for detection in detections:
         name = detection["name"]
 
         # Generate a labeled food image for this specific item
@@ -93,7 +93,6 @@ def run_checkup():
         food_id = db.upsert_food_item(user_id, detection, sensor_data)
         food_item_ids.append((food_id, detection))
         log.info(f"  [DB] {name} ({detection['freshness_status']}) -> food_item: {food_id}")
-   
 
     # ── 5. Log sensor readings ────────────────────────────────────────────────
     for food_id, _ in food_item_ids:
