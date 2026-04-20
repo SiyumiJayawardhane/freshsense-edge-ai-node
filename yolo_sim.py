@@ -82,7 +82,15 @@ def analyze_image(image_path: str) -> list:
         status = _score_to_status(score)
         confidence = round(rng.uniform(0.72, 0.98), 2)
 
-        
+        detection = {
+            "name": food["name"],
+            "category": food.get("category", "general"),
+            "freshness_status": status,
+            "freshness_score": score,
+            "confidence": confidence,
+            "estimated_days_to_spoil": days_left,
+            "storage_tips": food.get("storage_tips", []),
+        }
         detections.append(detection)
         log.info(f"  -> {food['name']}: {status} (score={score}, days_left={days_left})")
 
