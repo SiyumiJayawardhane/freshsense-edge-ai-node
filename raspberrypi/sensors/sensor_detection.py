@@ -16,7 +16,7 @@ from adafruit_ads1x15.analog_in import AnalogIn
 BASE_DIR = Path(__file__).resolve().parents[2]
 MODELS_DIR = Path(os.getenv("FRESHSENSE_MODELS_DIR", str(BASE_DIR / "models")))
 
-MODEL_PATH = MODELS_DIR / "rf_model.pkl"
+MODEL_PATH = MODELS_DIR / "fruit_model.pkl"
 SCALER_PATH = MODELS_DIR / "scaler.pkl"
 ENCODER_PATH = MODELS_DIR / "label_encoder.pkl"
 
@@ -36,13 +36,6 @@ mq3_sensor = AnalogIn(ads, 1)
 USE_SIM_FALLBACK = os.getenv("SENSOR_SIM_FALLBACK", "true").lower() == "true"
 DHT_READ_RETRIES = int(os.getenv("DHT_READ_RETRIES", "3"))
 log = logging.getLogger("raspberrypi.sensor")
-
-FEATURE_ALIASES = {
-    "temp": ["temp", "temperature", "Temp", "Temperature"],
-    "humidity": ["humidity", "Humidity"],
-    "mq135": ["mq135", "MQ135", "mq135_gas_value", "MQ135_gas_value"],
-    "mq3": ["mq3", "MQ3", "mq3_gas_value", "MQ3_gas_value"],
-}
 
 
 def read_sensor_data():
@@ -95,69 +88,21 @@ def read_sensor_data():
 
 
 def predict_status(sensor_input):
-    try:
-        x = _build_scaler_input(sensor_input)
-        x_scaled = scaler.transform(x)
-        # Keep feature names after scaling to avoid sklearn warnings.
-        x_scaled_df = pd.DataFrame(x_scaled, columns=list(x.columns))
-        pred_encoded = model.predict(x_scaled_df)[0]
-        pred_label = label_encoder.inverse_transform([pred_encoded])[0]
+    df = pd.DataFrame([sensor_input])
+    x = df[FEATURES]
+    x_scaled = scaler.transform(x)
+    # Keep feature names after scaling to avoid sklearn warnings.
+    x_scaled_df = pd.DataFrame(x_scaled, columns=FEATURES)
+    pred_encoded = model.predict(x_scaled_df)[0]
+    pred_label = label_encoder.inverse_transform([pred_encoded])[0]
 
-        prob_dict = None
-        if hasattr(model, "predict_proba"):
-            probs = model.predict_proba(x_scaled_df)[0]
-            classes = label_encoder.classes_
-            prob_dict = {str(classes[i]): float(probs[i]) for i in range(len(classes))}
-        return pred_label, prob_dict
-    except Exception as ex:
-        # Never let schema mismatch crash the sensor thread.
-        log.warning("Sensor model inference failed, using rule fallback: %s", ex)
-        return _fallback_predict(sensor_input), None
+    prob_dict = None
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(x_scaled_df)[0]
+        classes = label_encoder.classes_
+        prob_dict = {str(classes[i]): float(probs[i]) for i in range(len(classes))}
 
-
-def _build_scaler_input(sensor_input: dict) -> pd.DataFrame:
-    scaler_features = getattr(scaler, "feature_names_in_", None)
-    if scaler_features is None:
-        return pd.DataFrame(
-            [
-                {
-                    "temp": float(sensor_input.get("temp", 0.0)),
-                    "humidity": float(sensor_input.get("humidity", 0.0)),
-                    "mq135": float(sensor_input.get("mq135", 0.0)),
-                    "mq3": float(sensor_input.get("mq3", 0.0)),
-                }
-            ],
-            columns=FEATURES,
-        )
-
-    row = {}
-    for feature in scaler_features:
-        value = 0.0
-        feature_text = str(feature)
-        normalized = feature_text.lower()
-
-        for canonical, aliases in FEATURE_ALIASES.items():
-            if normalized == canonical or feature_text in aliases:
-                raw = sensor_input.get(canonical)
-                value = float(raw) if raw is not None else 0.0
-                break
-
-        row[feature_text] = value
-    return pd.DataFrame([row], columns=list(scaler_features))
-
-
-def _fallback_predict(sensor_input: dict) -> str:
-    mq135 = float(sensor_input.get("mq135", 0.0))
-    mq3 = float(sensor_input.get("mq3", 0.0))
-    humidity = float(sensor_input.get("humidity", 0.0))
-    temperature = float(sensor_input.get("temp", 0.0))
-
-    # Conservative rule-based fallback when model/scaler schema does not match.
-    if mq135 >= 26000 or mq3 >= 22000 or humidity >= 85:
-        return "spoiled"
-    if mq135 >= 18000 or mq3 >= 15000 or humidity >= 75 or temperature >= 31:
-        return "at_risk"
-    return "fresh"
+    return pred_label, prob_dict
 
 
 def run_sensor_loop(shared_state):
