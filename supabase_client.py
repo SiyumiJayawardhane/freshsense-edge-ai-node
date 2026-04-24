@@ -22,6 +22,7 @@ class SupabaseClient:
         self.conn = psycopg2.connect(database_url)
         self.conn.autocommit = True
         self._sensor_columns: set[str] | None = None
+        self._inference_columns: set[str] | None = None
         log.info("PostgreSQL connection established.")
 
     def _cursor(self):
@@ -217,6 +218,61 @@ class SupabaseClient:
         with self._cursor() as cur:
             cur.execute(query, tuple(base_values))
 
+    # ── Inference Logs ─────────────────────────────────────────────────────────
+
+    def _get_inference_columns(self) -> set[str]:
+        if self._inference_columns is not None:
+            return self._inference_columns
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'inference_logs'
+                """
+            )
+            self._inference_columns = {row["column_name"] for row in cur.fetchall()}
+        return self._inference_columns
+
+    def insert_inference_log(self, user_id: str, food_item_id: str, details: dict):
+        """
+        Inserts one inference audit record when inference_logs table exists.
+        This is optional and will no-op if the table is absent.
+        """
+        cols = self._get_inference_columns()
+        if not cols:
+            log.debug("Skipping inference log insert: public.inference_logs not found")
+            return
+
+        payload = {
+            "user_id": user_id,
+            "food_item_id": food_item_id,
+            "item_name": details.get("item_name"),
+            "vision_status": details.get("vision_status"),
+            "vision_confidence": details.get("vision_confidence"),
+            "sensor_status": details.get("sensor_status"),
+            "sensor_confidence": details.get("sensor_confidence"),
+            "gas_trend_status": details.get("gas_trend_status"),
+            "mq135_value": details.get("mq135_value"),
+            "mq3_value": details.get("mq3_value"),
+            "temperature": details.get("temperature"),
+            "humidity": details.get("humidity"),
+            "final_status": details.get("final_status"),
+            "final_score": details.get("final_score"),
+            "captured_at": details.get("captured_at") or datetime.utcnow().isoformat(),
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        filtered = {key: value for key, value in payload.items() if key in cols}
+        if not filtered:
+            return
+
+        query = sql.SQL("INSERT INTO public.inference_logs ({}) VALUES ({})").format(
+            sql.SQL(", ").join(sql.Identifier(k) for k in filtered.keys()),
+            sql.SQL(", ").join(sql.Placeholder() for _ in filtered.keys()),
+        )
+        with self._cursor() as cur:
+            cur.execute(query, tuple(filtered.values()))
+
     # ── Notifications ──────────────────────────────────────────────────────────
 
     def insert_notification(self, user_id: str, notif: dict):
@@ -235,6 +291,34 @@ class SupabaseClient:
                     datetime.utcnow().isoformat(),
                 )
             )
+
+    # ── Maintenance ────────────────────────────────────────────────────────────
+
+    def cleanup_tables(self, table_names: list[str]) -> int:
+        """
+        Deletes all rows from the requested public tables.
+        Ignores protected tables like profiles.
+        Returns number of tables cleaned.
+        """
+        protected_tables = {"profiles"}
+        requested = [t.strip() for t in table_names if t and t.strip()]
+        cleaned = [t for t in requested if t not in protected_tables]
+        skipped = [t for t in requested if t in protected_tables]
+
+        if skipped:
+            log.warning("Skipping protected tables during cleanup: %s", skipped)
+        if not cleaned:
+            log.info("Cleanup skipped: no eligible tables configured")
+            return 0
+
+        identifiers = [sql.SQL("public.{}").format(sql.Identifier(name)) for name in cleaned]
+        query = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+            sql.SQL(", ").join(identifiers)
+        )
+        with self._cursor() as cur:
+            cur.execute(query)
+        log.info("Cleanup complete for tables: %s", cleaned)
+        return len(cleaned)
 
     def close(self):
         self.conn.close()

@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
@@ -32,6 +33,29 @@ MANUAL_TRIGGER_ENABLED = os.getenv("MANUAL_TRIGGER_ENABLED", "true").lower() == 
 MANUAL_TRIGGER_HOST = os.getenv("MANUAL_TRIGGER_HOST", "0.0.0.0")
 MANUAL_TRIGGER_PORT = int(os.getenv("MANUAL_TRIGGER_PORT", "8010"))
 MANUAL_TRIGGER_TOKEN = os.getenv("MANUAL_TRIGGER_TOKEN", "").strip()
+CLEANUP_ENABLED = os.getenv("CLEANUP_ENABLED", "true").lower() == "true"
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "3600"))
+CLEANUP_TABLES = [
+    table.strip()
+    for table in os.getenv(
+        "CLEANUP_TABLES",
+        "notification_email_dispatches,notifications,sensor_readings,food_items",
+    ).split(",")
+    if table.strip()
+]
+MQ135_BASELINE_WINDOW = int(os.getenv("MQ135_BASELINE_WINDOW", "60"))
+MQ135_SMOOTHING_WINDOW = int(os.getenv("MQ135_SMOOTHING_WINDOW", "5"))
+MQ135_RATIO_AT_RISK = float(os.getenv("MQ135_RATIO_AT_RISK", "1.15"))
+MQ135_RATIO_SPOILED = float(os.getenv("MQ135_RATIO_SPOILED", "1.35"))
+MQ135_CONSECUTIVE_CONFIRMATIONS = int(os.getenv("MQ135_CONSECUTIVE_CONFIRMATIONS", "3"))
+MQ3_WEIGHT = float(os.getenv("MQ3_WEIGHT", "0.3"))
+MQ135_WEIGHT = float(os.getenv("MQ135_WEIGHT", "0.7"))
+VISION_FUSION_WEIGHT = float(os.getenv("VISION_FUSION_WEIGHT", "0.75"))
+SENSOR_FUSION_WEIGHT = float(os.getenv("SENSOR_FUSION_WEIGHT", "0.25"))
+VISION_LOCK_CONFIDENCE = float(os.getenv("VISION_LOCK_CONFIDENCE", "0.85"))
+SENSOR_CONFIDENCE_FALLBACK = float(os.getenv("SENSOR_CONFIDENCE_FALLBACK", "0.60"))
+GAS_SENSOR_AGREE_BONUS = float(os.getenv("GAS_SENSOR_AGREE_BONUS", "0.15"))
+GAS_SENSOR_DISAGREE_PENALTY = float(os.getenv("GAS_SENSOR_DISAGREE_PENALTY", "0.20"))
  
  
 def setup_logging() -> logging.Logger:
@@ -74,6 +98,179 @@ def parse_status(label: str) -> str:
     return "fresh"
  
  
+def normalize_status(status: str | None) -> str:
+    text = (status or "").strip().lower()
+    if text in {"atrisk", "at"}:
+        return "at_risk"
+    if text in {"fresh", "at_risk", "spoiled"}:
+        return text
+    return "fresh"
+
+
+def _status_to_score(status: str) -> float:
+    # 1.0 = fresh, 0.5 = at_risk, 0.0 = spoiled
+    if status == "fresh":
+        return 1.0
+    if status == "at_risk":
+        return 0.5
+    return 0.0
+
+
+def _score_to_status(value: float) -> str:
+    if value >= 0.75:
+        return "fresh"
+    if value >= 0.35:
+        return "at_risk"
+    return "spoiled"
+
+
+def status_from_sensor_prediction(sensor_prediction: str | None) -> str | None:
+    if sensor_prediction is None:
+        return None
+    text = str(sensor_prediction).strip().lower()
+    if text in {"fresh", "at_risk", "spoiled", "atrisk"}:
+        return normalize_status(text)
+    # Support labels like "fresh_banana" if model returns item-attached labels.
+    if "_" in text:
+        return normalize_status(text.split("_", 1)[0])
+    return None
+
+
+def sensor_prediction_confidence(sensor_data: dict, sensor_status: str | None) -> float:
+    if sensor_status is None:
+        return 0.0
+    probs = sensor_data.get("probabilities")
+    if isinstance(probs, dict):
+        direct = probs.get(sensor_status)
+        if direct is not None:
+            return float(max(0.0, min(1.0, direct)))
+        if sensor_status == "at_risk" and probs.get("atrisk") is not None:
+            return float(max(0.0, min(1.0, probs["atrisk"])))
+    return float(max(0.0, min(1.0, SENSOR_CONFIDENCE_FALLBACK)))
+
+
+def adjusted_sensor_confidence(sensor_status: str | None, gas_status: str | None, base_confidence: float) -> float:
+    if sensor_status is None:
+        return 0.0
+    if gas_status is None:
+        return float(max(0.0, min(1.0, base_confidence)))
+    if normalize_status(sensor_status) == normalize_status(gas_status):
+        return float(max(0.0, min(1.0, base_confidence + GAS_SENSOR_AGREE_BONUS)))
+    return float(max(0.0, min(1.0, base_confidence - GAS_SENSOR_DISAGREE_PENALTY)))
+
+
+def fuse_freshness_status(
+    vision_status: str,
+    sensor_status: str | None,
+    vision_confidence: float,
+    sensor_confidence: float = 0.0,
+) -> tuple[str, float]:
+    """
+    Vision-led fusion:
+    - Vision has higher base weight
+    - Sensor influence scales with sensor confidence
+    """
+    vision_normalized = normalize_status(vision_status)
+    if sensor_status is None:
+        return vision_normalized
+    sensor_normalized = normalize_status(sensor_status)
+    sensor_weight = max(0.0, SENSOR_FUSION_WEIGHT * max(0.0, min(1.0, sensor_confidence)))
+    vision_weight = max(0.0, VISION_FUSION_WEIGHT)
+    total_weight = max(vision_weight + sensor_weight, 1e-6)
+    fused_score = (
+        (vision_weight * _status_to_score(vision_normalized))
+        + (sensor_weight * _status_to_score(sensor_normalized))
+    ) / total_weight
+
+    # Keep very confident vision classifications stable.
+    if vision_confidence >= VISION_LOCK_CONFIDENCE:
+        return vision_normalized, _status_to_score(vision_normalized)
+    return _score_to_status(fused_score), fused_score
+
+
+class GasSignalTracker:
+    """
+    Tracks MQ135 + MQ3 baseline and trend to infer freshness signal.
+    """
+
+    def __init__(self):
+        self._mq135_baseline_samples: deque[float] = deque(maxlen=max(1, MQ135_BASELINE_WINDOW))
+        self._mq3_baseline_samples: deque[float] = deque(maxlen=max(1, MQ135_BASELINE_WINDOW))
+        self._mq135_recent_samples: deque[float] = deque(maxlen=max(1, MQ135_SMOOTHING_WINDOW))
+        self._mq3_recent_samples: deque[float] = deque(maxlen=max(1, MQ135_SMOOTHING_WINDOW))
+        self._mq135_baseline: float | None = None
+        self._mq3_baseline: float | None = None
+        self._candidate_status: str | None = None
+        self._candidate_count = 0
+        self._stable_status: str = "fresh"
+
+    def _median(self, values: list[float]) -> float:
+        ordered = sorted(values)
+        n = len(ordered)
+        mid = n // 2
+        if n % 2 == 1:
+            return float(ordered[mid])
+        return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+    def baseline_ready(self) -> bool:
+        return self._mq135_baseline is not None and self._mq3_baseline is not None
+
+    def baseline_progress(self) -> tuple[int, int]:
+        return len(self._mq135_baseline_samples), len(self._mq3_baseline_samples)
+
+    def baselines(self) -> tuple[float | None, float | None]:
+        return self._mq135_baseline, self._mq3_baseline
+
+    def update(self, mq135_value: float | int | None, mq3_value: float | int | None) -> str | None:
+        if mq135_value is None or mq3_value is None:
+            return None
+        current_mq135 = float(mq135_value)
+        current_mq3 = float(mq3_value)
+        if current_mq135 <= 0 or current_mq3 <= 0:
+            return None
+
+        self._mq135_recent_samples.append(current_mq135)
+        self._mq3_recent_samples.append(current_mq3)
+        smoothed_mq135 = self._median(list(self._mq135_recent_samples))
+        smoothed_mq3 = self._median(list(self._mq3_recent_samples))
+
+        if not self.baseline_ready():
+            if self._mq135_baseline is None:
+                self._mq135_baseline_samples.append(smoothed_mq135)
+                if len(self._mq135_baseline_samples) >= max(1, MQ135_BASELINE_WINDOW):
+                    self._mq135_baseline = self._median(list(self._mq135_baseline_samples))
+            if self._mq3_baseline is None:
+                self._mq3_baseline_samples.append(smoothed_mq3)
+                if len(self._mq3_baseline_samples) >= max(1, MQ135_BASELINE_WINDOW):
+                    self._mq3_baseline = self._median(list(self._mq3_baseline_samples))
+            return None
+
+        baseline_mq135 = max(self._mq135_baseline or 0.0, 1e-6)
+        baseline_mq3 = max(self._mq3_baseline or 0.0, 1e-6)
+        ratio_mq135 = smoothed_mq135 / baseline_mq135
+        ratio_mq3 = smoothed_mq3 / baseline_mq3
+
+        total_weight = max(MQ135_WEIGHT + MQ3_WEIGHT, 1e-6)
+        combined_ratio = ((MQ135_WEIGHT * ratio_mq135) + (MQ3_WEIGHT * ratio_mq3)) / total_weight
+
+        if combined_ratio >= MQ135_RATIO_SPOILED:
+            candidate = "spoiled"
+        elif combined_ratio >= MQ135_RATIO_AT_RISK:
+            candidate = "at_risk"
+        else:
+            candidate = "fresh"
+
+        if candidate == self._candidate_status:
+            self._candidate_count += 1
+        else:
+            self._candidate_status = candidate
+            self._candidate_count = 1
+
+        if self._candidate_count >= max(1, MQ135_CONSECUTIVE_CONFIRMATIONS):
+            self._stable_status = candidate
+        return self._stable_status
+
+
 def estimate_days_to_spoil(status: str, confidence: float) -> int:
     pct = max(0.0, min(1.0, confidence))
     if status == "spoiled":
@@ -121,13 +318,18 @@ def build_detected_items(vision_data: dict, storage: StorageClient | None) -> li
     return items
  
  
-def build_detection_record(item: dict) -> dict:
+def build_detection_record(
+    item: dict,
+    sensor_prediction: str | None = None,
+    sensor_confidence: float = 0.0,
+) -> tuple[dict, dict]:
     label = item.get("label", "fresh_food_item")
     confidence = float(item.get("confidence", 0.0))
-    status = parse_status(label)
+    vision_status = parse_status(label)
+    status, fused_score = fuse_freshness_status(vision_status, sensor_prediction, confidence, sensor_confidence)
     name = parse_food_name(label).replace("_", " ").strip().title()
     days = estimate_days_to_spoil(status, confidence)
-    return {
+    record = {
         "name": name,
         "category": "Produce",
         "freshness_status": status,
@@ -137,6 +339,16 @@ def build_detection_record(item: dict) -> dict:
         "storage_tips": storage_tips_for(status, name.lower()),
         "image_url": item.get("image_url"),
     }
+    debug = {
+        "item_name": name,
+        "vision_status": vision_status,
+        "vision_confidence": confidence,
+        "sensor_status": sensor_prediction,
+        "sensor_confidence": sensor_confidence,
+        "final_status": status,
+        "final_score": float(fused_score),
+    }
+    return record, debug
  
  
 def _first_non_none(data: dict, keys: list[str]):
@@ -145,6 +357,44 @@ def _first_non_none(data: dict, keys: list[str]):
         if value is not None:
             return value
     return None
+
+
+def run_cleanup_loop():
+    """
+    Background maintenance loop for periodic DB table cleanup.
+    Uses a dedicated DB connection for thread-safe operation.
+    """
+    log = logging.getLogger("raspberrypi.cleanup")
+    if not CLEANUP_ENABLED:
+        log.info("Cleanup loop disabled")
+        return
+    if not DIRECT_DB_ENABLED:
+        log.info("Cleanup loop disabled because DIRECT_DB_ENABLED=false")
+        return
+    if CLEANUP_INTERVAL_SECONDS <= 0:
+        log.warning("Cleanup loop disabled due to invalid CLEANUP_INTERVAL_SECONDS=%s", CLEANUP_INTERVAL_SECONDS)
+        return
+
+    db: SupabaseClient | None = None
+    try:
+        db = SupabaseClient()
+        log.info(
+            "Cleanup loop started interval=%ss tables=%s",
+            CLEANUP_INTERVAL_SECONDS,
+            CLEANUP_TABLES,
+        )
+        while True:
+            try:
+                cleaned_count = db.cleanup_tables(CLEANUP_TABLES)
+                log.info("Scheduled cleanup done: tables_cleaned=%s", cleaned_count)
+            except Exception as ex:
+                log.exception("Scheduled cleanup failed: %s", ex)
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+    except Exception as ex:
+        log.exception("Cleanup loop startup failed: %s", ex)
+    finally:
+        if db:
+            db.close()
  
  
 class ManualTriggerState:
@@ -250,12 +500,15 @@ def main():
  
     sensor_thread = threading.Thread(target=run_sensor_loop, args=(shared_state,), daemon=True)
     vision_thread = threading.Thread(target=run_vision_loop, args=(shared_state,), daemon=True)
+    cleanup_thread = threading.Thread(target=run_cleanup_loop, daemon=True)
     sensor_thread.start()
     vision_thread.start()
+    cleanup_thread.start()
     manual_trigger_state = ManualTriggerState()
     start_manual_trigger_server(manual_trigger_state, log)
     log.info("Raspberry Pi runtime started")
     last_sent_signature = None
+    gas_tracker = GasSignalTracker()
  
     try:
         while True:
@@ -275,6 +528,8 @@ def main():
                 log.info("Manual run requested by source=%s", manual_trigger.get("source"))
  
             debug = sensor_data.get("debug", {})
+            sensor_model_status = status_from_sensor_prediction(sensor_data.get("prediction"))
+            base_sensor_conf = sensor_prediction_confidence(sensor_data, sensor_model_status)
             mq3_value = _first_non_none(debug, ["mq3_model_value", "mq3_gas_value", "mq3", "mq3_raw_ads"])
             mq135_value = _first_non_none(
                 debug,
@@ -286,6 +541,37 @@ def main():
                     mq3_value,
                     mq135_value,
                     sorted(debug.keys()),
+                )
+            gas_sensor_status = gas_tracker.update(mq135_value, mq3_value)
+            if not gas_tracker.baseline_ready():
+                progress_135, progress_3 = gas_tracker.baseline_progress()
+                log.info(
+                    "Gas baseline calibration in progress (mq135=%s/%s mq3=%s/%s)",
+                    progress_135,
+                    max(1, MQ135_BASELINE_WINDOW),
+                    progress_3,
+                    max(1, MQ135_BASELINE_WINDOW),
+                )
+            elif gas_sensor_status:
+                baseline_mq135, baseline_mq3 = gas_tracker.baselines()
+                ratio_135 = float(mq135_value) / max(baseline_mq135 or 1.0, 1e-6)
+                ratio_3 = float(mq3_value) / max(baseline_mq3 or 1.0, 1e-6)
+                log.info(
+                    "Gas trend status=%s mq135_ratio=%.3f mq3_ratio=%.3f mq135_base=%.2f mq3_base=%.2f",
+                    gas_sensor_status,
+                    ratio_135,
+                    ratio_3,
+                    baseline_mq135 or 0.0,
+                    baseline_mq3 or 0.0,
+                )
+            effective_sensor_conf = adjusted_sensor_confidence(sensor_model_status, gas_sensor_status, base_sensor_conf)
+            if sensor_model_status:
+                log.info(
+                    "Sensor model status=%s base_conf=%.3f effective_conf=%.3f gas_status=%s",
+                    sensor_model_status,
+                    base_sensor_conf,
+                    effective_sensor_conf,
+                    gas_sensor_status,
                 )
  
             payload = {
@@ -310,9 +596,22 @@ def main():
                     }
                     food_item_ids: list[tuple[str, dict]] = []
                     for item in payload["detected_items"]:
-                        detection = build_detection_record(item)
+                        detection, inference_debug = build_detection_record(item, sensor_model_status, effective_sensor_conf)
                         food_id = db.insert_food_item(SUPABASE_USER_ID, detection, sensor_db)
                         db.insert_sensor_reading(SUPABASE_USER_ID, food_id, sensor_db)
+                        db.insert_inference_log(
+                            SUPABASE_USER_ID,
+                            food_id,
+                            {
+                                **inference_debug,
+                                "gas_trend_status": gas_sensor_status,
+                                "mq135_value": payload["sensor"]["mq135_gas_value"],
+                                "mq3_value": payload["sensor"]["mq3_gas_value"],
+                                "temperature": payload["sensor"]["temperature"],
+                                "humidity": payload["sensor"]["humidity"],
+                                "captured_at": payload["captured_at"],
+                            },
+                        )
                         food_item_ids.append((food_id, detection))
                     notifications = generate_notifications(food_item_ids)
                     for notif in notifications:

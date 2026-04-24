@@ -20,7 +20,7 @@ class StorageClient:
                 "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env for image uploads."
             )
 
-        self.bucket = "food-images"
+        self.bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "food-images")
         self.base_url = f"{self.supabase_url}/storage/v1/object"
         self.headers = {
             "Authorization": f"Bearer {self.service_role_key}",
