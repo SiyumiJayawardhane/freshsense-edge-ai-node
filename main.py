@@ -32,6 +32,16 @@ MANUAL_TRIGGER_ENABLED = os.getenv("MANUAL_TRIGGER_ENABLED", "true").lower() == 
 MANUAL_TRIGGER_HOST = os.getenv("MANUAL_TRIGGER_HOST", "0.0.0.0")
 MANUAL_TRIGGER_PORT = int(os.getenv("MANUAL_TRIGGER_PORT", "8010"))
 MANUAL_TRIGGER_TOKEN = os.getenv("MANUAL_TRIGGER_TOKEN", "").strip()
+CLEANUP_ENABLED = os.getenv("CLEANUP_ENABLED", "true").lower() == "true"
+CLEANUP_INTERVAL_SECONDS = int(os.getenv("CLEANUP_INTERVAL_SECONDS", "3600"))
+CLEANUP_TABLES = [
+    table.strip()
+    for table in os.getenv(
+        "CLEANUP_TABLES",
+        "notification_email_dispatches,notifications,sensor_readings,food_items",
+    ).split(",")
+    if table.strip()
+]
  
  
 def setup_logging() -> logging.Logger:
@@ -145,6 +155,44 @@ def _first_non_none(data: dict, keys: list[str]):
         if value is not None:
             return value
     return None
+
+
+def run_cleanup_loop():
+    """
+    Background maintenance loop for periodic DB table cleanup.
+    Uses a dedicated DB connection for thread-safe operation.
+    """
+    log = logging.getLogger("raspberrypi.cleanup")
+    if not CLEANUP_ENABLED:
+        log.info("Cleanup loop disabled")
+        return
+    if not DIRECT_DB_ENABLED:
+        log.info("Cleanup loop disabled because DIRECT_DB_ENABLED=false")
+        return
+    if CLEANUP_INTERVAL_SECONDS <= 0:
+        log.warning("Cleanup loop disabled due to invalid CLEANUP_INTERVAL_SECONDS=%s", CLEANUP_INTERVAL_SECONDS)
+        return
+
+    db: SupabaseClient | None = None
+    try:
+        db = SupabaseClient()
+        log.info(
+            "Cleanup loop started interval=%ss tables=%s",
+            CLEANUP_INTERVAL_SECONDS,
+            CLEANUP_TABLES,
+        )
+        while True:
+            try:
+                cleaned_count = db.cleanup_tables(CLEANUP_TABLES)
+                log.info("Scheduled cleanup done: tables_cleaned=%s", cleaned_count)
+            except Exception as ex:
+                log.exception("Scheduled cleanup failed: %s", ex)
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+    except Exception as ex:
+        log.exception("Cleanup loop startup failed: %s", ex)
+    finally:
+        if db:
+            db.close()
  
  
 class ManualTriggerState:
@@ -250,8 +298,10 @@ def main():
  
     sensor_thread = threading.Thread(target=run_sensor_loop, args=(shared_state,), daemon=True)
     vision_thread = threading.Thread(target=run_vision_loop, args=(shared_state,), daemon=True)
+    cleanup_thread = threading.Thread(target=run_cleanup_loop, daemon=True)
     sensor_thread.start()
     vision_thread.start()
+    cleanup_thread.start()
     manual_trigger_state = ManualTriggerState()
     start_manual_trigger_server(manual_trigger_state, log)
     log.info("Raspberry Pi runtime started")

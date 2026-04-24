@@ -34,6 +34,10 @@ CAMERA_INDEX=0
 DIRECT_DB_ENABLED=true
 API_FORWARD_ENABLED=false
 INGEST_INTERVAL_SECONDS=5
+SUPABASE_STORAGE_BUCKET=food-images
+CLEANUP_ENABLED=true
+CLEANUP_INTERVAL_SECONDS=3600
+CLEANUP_TABLES=notification_email_dispatches,notifications,sensor_readings,food_items
 ```
 
 ## Install + Run on Raspberry Pi
@@ -50,6 +54,7 @@ Default behavior now mirrors the previous simulation pipeline:
 - upsert into `food_items`
 - insert `sensor_readings` per detected item
 - generate and insert `notifications`
+- run scheduled table cleanup for configured tables (`profiles` is never cleaned)
 
 `API_FORWARD_ENABLED=true` is optional if you also want to forward payloads to an ingest API.
 

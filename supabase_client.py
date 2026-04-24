@@ -236,6 +236,34 @@ class SupabaseClient:
                 )
             )
 
+    # ── Maintenance ────────────────────────────────────────────────────────────
+
+    def cleanup_tables(self, table_names: list[str]) -> int:
+        """
+        Deletes all rows from the requested public tables.
+        Ignores protected tables like profiles.
+        Returns number of tables cleaned.
+        """
+        protected_tables = {"profiles"}
+        requested = [t.strip() for t in table_names if t and t.strip()]
+        cleaned = [t for t in requested if t not in protected_tables]
+        skipped = [t for t in requested if t in protected_tables]
+
+        if skipped:
+            log.warning("Skipping protected tables during cleanup: %s", skipped)
+        if not cleaned:
+            log.info("Cleanup skipped: no eligible tables configured")
+            return 0
+
+        identifiers = [sql.SQL("public.{}").format(sql.Identifier(name)) for name in cleaned]
+        query = sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(
+            sql.SQL(", ").join(identifiers)
+        )
+        with self._cursor() as cur:
+            cur.execute(query)
+        log.info("Cleanup complete for tables: %s", cleaned)
+        return len(cleaned)
+
     def close(self):
         self.conn.close()
         log.info("DB connection closed.")
