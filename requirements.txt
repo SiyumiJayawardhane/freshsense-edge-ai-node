@@ -1,19 +1,12 @@
-# FreshGuard - Python dependencies
-# Install with: pip install -r requirements.txt
-
-psycopg2-binary==2.9.9
-python-dotenv==1.0.1
-Pillow==10.3.0
-requests==2.32.3
-
-# For real DHT sensor (uncomment when hardware is ready):
-# Adafruit_DHT==1.4.0
-# RPi.GPIO==0.7.1
-
-# For real MQ sensor via SPI ADC (uncomment when hardware is ready):
-# spidev==3.6
-
-# For real YOLOv5 (uncomment when model is trained):
-# torch==2.0.1
-# torchvision==0.15.2
-# ultralytics==8.0.196
+numpy>=1.26.0
+pandas>=2.2.0
+opencv-python>=4.10.0
+onnxruntime>=1.19.0
+joblib>=1.4.0
+scikit-learn==1.6.1
+adafruit-blinka>=8.50.0
+adafruit-circuitpython-ads1x15>=2.2.27
+adafruit-circuitpython-dht>=4.0.7
+requests>=2.32.3
+python-dotenv>=1.0.1
+psycopg2-binary>=2.9.9

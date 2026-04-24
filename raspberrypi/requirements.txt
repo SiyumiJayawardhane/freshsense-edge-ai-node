@@ -1,9 +1,0 @@
-numpy
-pandas
-opencv-python
-onnxruntime
-joblib
-scikit-learn
-adafruit-blinka
-adafruit-circuitpython-ads1x15
-adafruit-circuitpython-dht
