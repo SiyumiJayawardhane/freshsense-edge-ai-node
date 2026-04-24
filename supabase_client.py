@@ -36,21 +36,27 @@ class SupabaseClient:
 
     # ── Food Items ─────────────────────────────────────────────────────────────
 
-    def upsert_food_item(self, user_id: str, detection: dict, sensor_data: dict) -> str:
+    def insert_food_item(self, user_id: str, detection: dict, sensor_data: dict) -> str:
         """
-        Upserts a food_items row for this user+name combo.
-        Returns the food item UUID.
+        Inserts a food_items row unless the same user+name+freshness_status
+        already exists. Returns the food item UUID.
         """
         now = datetime.utcnow().isoformat()
 
         with self._cursor() as cur:
+            image_url = detection.get("image_url")
             cur.execute(
-                "SELECT id FROM public.food_items WHERE user_id = %s AND name = %s LIMIT 1",
-                (user_id, detection["name"])
+                """
+                SELECT id
+                FROM public.food_items
+                WHERE user_id = %s
+                  AND name = %s
+                  AND freshness_status = %s
+                LIMIT 1
+                """,
+                (user_id, detection["name"], detection["freshness_status"]),
             )
             existing = cur.fetchone()
-
-            image_url = detection.get("image_url")
 
             if existing:
                 food_id = str(existing["id"])
@@ -60,7 +66,6 @@ class SupabaseClient:
                         category = %s,
                         image_url = %s,
                         freshness_score = %s,
-                        freshness_status = %s,
                         confidence = %s,
                         estimated_days_to_spoil = %s,
                         storage_tips = %s,
@@ -72,14 +77,20 @@ class SupabaseClient:
                         detection["category"],
                         image_url,
                         detection["freshness_score"],
-                        detection["freshness_status"],
                         detection["confidence"],
                         detection["estimated_days_to_spoil"],
                         detection["storage_tips"],
-                        now, now, food_id,
-                    )
+                        now,
+                        now,
+                        food_id,
+                    ),
                 )
-                log.info(f"Updated food_item: {detection['name']} ({food_id})")
+                log.info(
+                    "Updated existing food_item: %s status=%s (%s)",
+                    detection["name"],
+                    detection["freshness_status"],
+                    food_id,
+                )
             else:
                 cur.execute(
                     """
@@ -99,9 +110,20 @@ class SupabaseClient:
                     )
                 )
                 food_id = str(cur.fetchone()["id"])
-                log.info(f"Inserted food_item: {detection['name']} ({food_id})")
+                log.info(
+                    "Inserted new food_item: %s status=%s (%s)",
+                    detection["name"],
+                    detection["freshness_status"],
+                    food_id,
+                )
 
         return food_id
+
+    def upsert_food_item(self, user_id: str, detection: dict, sensor_data: dict) -> str:
+        """
+        Backward-compatible alias. Behavior is insert-only.
+        """
+        return self.insert_food_item(user_id, detection, sensor_data)
 
     # ── Sensor Readings ────────────────────────────────────────────────────────
 

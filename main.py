@@ -220,7 +220,7 @@ def main():
                     food_item_ids: list[tuple[str, dict]] = []
                     for item in payload["detected_items"]:
                         detection = build_detection_record(item)
-                        food_id = db.upsert_food_item(SUPABASE_USER_ID, detection, sensor_db)
+                        food_id = db.insert_food_item(SUPABASE_USER_ID, detection, sensor_db)
                         db.insert_sensor_reading(SUPABASE_USER_ID, food_id, sensor_db)
                         food_item_ids.append((food_id, detection))
                     notifications = generate_notifications(food_item_ids)
