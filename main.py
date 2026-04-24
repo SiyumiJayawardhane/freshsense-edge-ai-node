@@ -84,6 +84,70 @@ def parse_status(label: str) -> str:
     return "fresh"
  
  
+def _normalize_status_key(value: str) -> str | None:
+    text = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in {"atrisk", "at", "at_risk"}:
+        return "at_risk"
+    if text in {"fresh", "spoiled"}:
+        return text
+    return None
+
+
+def _vision_status_probabilities(label: str, confidence: float) -> dict[str, float]:
+    # Confidence softening keeps uncertainty when model confidence is low.
+    status = parse_status(label)
+    conf = max(0.0, min(1.0, float(confidence)))
+    others = [key for key in ("fresh", "at_risk", "spoiled") if key != status]
+    remainder = max(0.0, 1.0 - conf)
+    split = remainder / len(others)
+    probs = {key: split for key in ("fresh", "at_risk", "spoiled")}
+    probs[status] = conf
+    return probs
+
+
+def _sensor_status_probabilities(sensor_data: dict | None) -> dict[str, float] | None:
+    if not sensor_data:
+        return None
+    raw = sensor_data.get("probabilities")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    normalized = {"fresh": 0.0, "at_risk": 0.0, "spoiled": 0.0}
+    total = 0.0
+    for key, value in raw.items():
+        status = _normalize_status_key(str(key))
+        if not status:
+            continue
+        try:
+            prob = max(0.0, float(value))
+        except (TypeError, ValueError):
+            continue
+        normalized[status] += prob
+        total += prob
+    if total <= 0.0:
+        return None
+    return {key: normalized[key] / total for key in normalized}
+
+
+def _fusion_weights(vision_confidence: float, has_sensor_probs: bool) -> tuple[float, float]:
+    if not has_sensor_probs:
+        return 1.0, 0.0
+    if vision_confidence >= 0.9:
+        return 0.85, 0.15
+    if vision_confidence < 0.55:
+        return 0.55, 0.45
+    return 0.7, 0.3
+
+
+def _fuse_status(vision_probs: dict[str, float], sensor_probs: dict[str, float] | None, vision_confidence: float) -> tuple[str, float]:
+    w_vision, w_sensor = _fusion_weights(vision_confidence, has_sensor_probs=bool(sensor_probs))
+    fused = {}
+    for key in ("fresh", "at_risk", "spoiled"):
+        fused[key] = (w_vision * vision_probs.get(key, 0.0)) + (w_sensor * (sensor_probs or {}).get(key, 0.0))
+    status = max(fused, key=fused.get)
+    confidence = max(0.0, min(1.0, float(fused[status])))
+    return status, confidence
+
+
 def estimate_days_to_spoil(status: str, confidence: float) -> int:
     pct = max(0.0, min(1.0, confidence))
     if status == "spoiled":
@@ -131,10 +195,12 @@ def build_detected_items(vision_data: dict, storage: StorageClient | None) -> li
     return items
  
  
-def build_detection_record(item: dict) -> dict:
+def build_detection_record(item: dict, sensor_data: dict | None) -> dict:
     label = item.get("label", "fresh_food_item")
-    confidence = float(item.get("confidence", 0.0))
-    status = parse_status(label)
+    vision_confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
+    vision_probs = _vision_status_probabilities(label, vision_confidence)
+    sensor_probs = _sensor_status_probabilities(sensor_data)
+    status, confidence = _fuse_status(vision_probs, sensor_probs, vision_confidence)
     name = parse_food_name(label).replace("_", " ").strip().title()
     days = estimate_days_to_spoil(status, confidence)
     return {
@@ -360,7 +426,7 @@ def main():
                     }
                     food_item_ids: list[tuple[str, dict]] = []
                     for item in payload["detected_items"]:
-                        detection = build_detection_record(item)
+                        detection = build_detection_record(item, sensor_data)
                         food_id = db.insert_food_item(SUPABASE_USER_ID, detection, sensor_db)
                         db.insert_sensor_reading(SUPABASE_USER_ID, food_id, sensor_db)
                         food_item_ids.append((food_id, detection))
