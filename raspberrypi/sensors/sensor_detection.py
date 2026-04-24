@@ -33,24 +33,17 @@ ads.gain = 1
 mq135_sensor = AnalogIn(ads, 0)
 mq3_sensor = AnalogIn(ads, 1)
 
-ADS_MIN = 0
-ADS_MAX = 32767
 USE_SIM_FALLBACK = os.getenv("SENSOR_SIM_FALLBACK", "true").lower() == "true"
 DHT_READ_RETRIES = int(os.getenv("DHT_READ_RETRIES", "3"))
 log = logging.getLogger("raspberrypi.sensor")
-
-
-def ads_to_esp32(raw_ads, ads_min=ADS_MIN, ads_max=ADS_MAX):
-    raw_ads = max(ads_min, min(raw_ads, ads_max))
-    return int((raw_ads - ads_min) * 4095 / (ads_max - ads_min))
 
 
 def read_sensor_data():
     # Read MQ sensors independently so gas values can still be real even if DHT fails.
     mq135_raw_ads = mq135_sensor.value
     mq3_raw_ads = mq3_sensor.value
-    mq135_model_value = ads_to_esp32(mq135_raw_ads)
-    mq3_model_value = ads_to_esp32(mq3_raw_ads)
+    mq135_model_value = int(mq135_raw_ads)
+    mq3_model_value = int(mq3_raw_ads)
 
     temperature = None
     humidity = None
