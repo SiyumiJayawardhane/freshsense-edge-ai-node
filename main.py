@@ -1,33 +1,39 @@
 import base64
+import json
 import logging
 import os
 import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-
+ 
 import requests
 from dotenv import load_dotenv
-
+ 
 from notifier import generate_notifications
 from raspberrypi.sensors.sensor_detection import run_sensor_loop
 from raspberrypi.vision.yolo_detection import run_vision_loop
 from storage_client import StorageClient
 from supabase_client import SupabaseClient
-
+ 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "raspberrypi-runtime.log"
-
+ 
 API_URL = os.getenv("FRESHSENSE_API_URL", "http://127.0.0.1:8000/api/ingest")
 SUPABASE_USER_ID = os.getenv("SUPABASE_USER_ID")
 DIRECT_DB_ENABLED = os.getenv("DIRECT_DB_ENABLED", "true").lower() == "true"
 API_FORWARD_ENABLED = os.getenv("API_FORWARD_ENABLED", "false").lower() == "true"
-INGEST_INTERVAL_SECONDS = int(os.getenv("INGEST_INTERVAL_SECONDS", "5"))
-
-
+INGEST_INTERVAL_SECONDS = int(os.getenv("INGEST_INTERVAL_SECONDS", "60"))
+MANUAL_TRIGGER_ENABLED = os.getenv("MANUAL_TRIGGER_ENABLED", "true").lower() == "true"
+MANUAL_TRIGGER_HOST = os.getenv("MANUAL_TRIGGER_HOST", "0.0.0.0")
+MANUAL_TRIGGER_PORT = int(os.getenv("MANUAL_TRIGGER_PORT", "8010"))
+MANUAL_TRIGGER_TOKEN = os.getenv("MANUAL_TRIGGER_TOKEN", "").strip()
+ 
+ 
 def setup_logging() -> logging.Logger:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -39,8 +45,8 @@ def setup_logging() -> logging.Logger:
     stream_handler.setFormatter(formatter)
     logging.basicConfig(level=level, handlers=[file_handler, stream_handler], force=True)
     return logging.getLogger("raspberrypi.main")
-
-
+ 
+ 
 def image_to_base64(path: str | None) -> str | None:
     if not path:
         return None
@@ -49,15 +55,15 @@ def image_to_base64(path: str | None) -> str | None:
         return None
     with p.open("rb") as f:
         return base64.b64encode(f.read()).decode("ascii")
-
-
+ 
+ 
 def parse_food_name(label: str) -> str:
     text = (label or "").strip().lower()
     if "_" in text:
         return text.split("_", 1)[1]
     return text or "food_item"
-
-
+ 
+ 
 def parse_status(label: str) -> str:
     text = (label or "").strip().lower()
     status = text.split("_", 1)[0] if "_" in text else "fresh"
@@ -66,8 +72,8 @@ def parse_status(label: str) -> str:
     if status in {"fresh", "at_risk", "spoiled"}:
         return status
     return "fresh"
-
-
+ 
+ 
 def estimate_days_to_spoil(status: str, confidence: float) -> int:
     pct = max(0.0, min(1.0, confidence))
     if status == "spoiled":
@@ -75,8 +81,8 @@ def estimate_days_to_spoil(status: str, confidence: float) -> int:
     if status == "at_risk":
         return max(1, int(round(1 + (1 - pct) * 2)))
     return max(3, int(round(3 + pct * 4)))
-
-
+ 
+ 
 def freshness_score(status: str, confidence: float) -> float:
     pct = round(max(0.0, min(1.0, confidence)) * 100, 1)
     if status == "fresh":
@@ -84,16 +90,16 @@ def freshness_score(status: str, confidence: float) -> float:
     if status == "at_risk":
         return min(69.9, max(35.0, pct))
     return min(34.9, pct)
-
-
+ 
+ 
 def storage_tips_for(status: str, item_name: str) -> list[str]:
     if status == "spoiled":
         return [f"Discard {item_name} safely.", "Clean nearby storage area."]
     if status == "at_risk":
         return [f"Use {item_name} soon.", "Store sealed and refrigerated."]
     return [f"Keep {item_name} chilled.", "Check freshness daily."]
-
-
+ 
+ 
 def build_detected_items(vision_data: dict, storage: StorageClient | None) -> list[dict]:
     full_image_b64 = image_to_base64(vision_data.get("saved_image"))
     items: list[dict] = []
@@ -113,8 +119,8 @@ def build_detected_items(vision_data: dict, storage: StorageClient | None) -> li
             item["image_base64"] = image_b64
         items.append(item)
     return items
-
-
+ 
+ 
 def build_detection_record(item: dict) -> dict:
     label = item.get("label", "fresh_food_item")
     confidence = float(item.get("confidence", 0.0))
@@ -131,21 +137,102 @@ def build_detection_record(item: dict) -> dict:
         "storage_tips": storage_tips_for(status, name.lower()),
         "image_url": item.get("image_url"),
     }
-
-
+ 
+ 
 def _first_non_none(data: dict, keys: list[str]):
     for key in keys:
         value = data.get(key)
         if value is not None:
             return value
     return None
-
-
+ 
+ 
+class ManualTriggerState:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._pending: dict | None = None
+ 
+    def queue(self, source: str) -> None:
+        with self._lock:
+            self._pending = {"source": source, "triggered_at": datetime.now(timezone.utc).isoformat()}
+            self._event.set()
+ 
+    def wait(self, timeout_seconds: int) -> dict | None:
+        if not self._event.wait(timeout=timeout_seconds):
+            return None
+        with self._lock:
+            pending = self._pending
+            self._pending = None
+            self._event.clear()
+            return pending
+ 
+ 
+def start_manual_trigger_server(state: ManualTriggerState, log: logging.Logger) -> None:
+    if not MANUAL_TRIGGER_ENABLED:
+        log.info("Manual trigger API disabled")
+        return
+    if not MANUAL_TRIGGER_TOKEN:
+        log.warning("Manual trigger API running without token protection")
+ 
+    class ManualTriggerHandler(BaseHTTPRequestHandler):
+        def _send_json(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+ 
+        def do_POST(self) -> None:
+            if self.path != "/trigger-run":
+                self._send_json(404, {"ok": False, "error": "not_found"})
+                return
+            if MANUAL_TRIGGER_TOKEN:
+                token = self.headers.get("X-Edge-Trigger-Token", "").strip()
+                if token != MANUAL_TRIGGER_TOKEN:
+                    log.warning("Manual trigger rejected due to invalid token")
+                    self._send_json(401, {"ok": False, "error": "unauthorized"})
+                    return
+ 
+            source = "live-backend"
+            raw_len = self.headers.get("Content-Length", "0").strip()
+            try:
+                body_len = int(raw_len or "0")
+            except ValueError:
+                body_len = 0
+            if body_len > 0:
+                try:
+                    payload = json.loads(self.rfile.read(body_len).decode("utf-8"))
+                    source = str(payload.get("source") or source)
+                except Exception as ex:
+                    log.warning("Manual trigger payload parse failed: %s", ex)
+                    source = "live-backend"
+ 
+            log.info("Manual trigger request accepted source=%s", source)
+            state.queue(source=source)
+            self._send_json(202, {"ok": True, "message": "manual trigger queued"})
+ 
+        def do_GET(self) -> None:
+            if self.path == "/health":
+                self._send_json(200, {"status": "ok"})
+                return
+            self._send_json(404, {"ok": False, "error": "not_found"})
+ 
+        def log_message(self, fmt: str, *args) -> None:
+            log.debug("manual-trigger-server: " + fmt, *args)
+ 
+    server = ThreadingHTTPServer((MANUAL_TRIGGER_HOST, MANUAL_TRIGGER_PORT), ManualTriggerHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log.info("Manual trigger API listening on %s:%s", MANUAL_TRIGGER_HOST, MANUAL_TRIGGER_PORT)
+ 
+ 
 def main():
     log = setup_logging()
     if not SUPABASE_USER_ID:
         raise RuntimeError("SUPABASE_USER_ID must be set in edge-ai-node .env")
-
+ 
     shared_state = {"sensor": None, "vision": None}
     storage: StorageClient | None = None
     db: SupabaseClient | None = None
@@ -160,17 +247,19 @@ def main():
             log.info("Direct Supabase writes enabled")
         except Exception as ex:
             log.warning("Direct Supabase writes disabled: %s", ex)
-
+ 
     sensor_thread = threading.Thread(target=run_sensor_loop, args=(shared_state,), daemon=True)
     vision_thread = threading.Thread(target=run_vision_loop, args=(shared_state,), daemon=True)
     sensor_thread.start()
     vision_thread.start()
+    manual_trigger_state = ManualTriggerState()
+    start_manual_trigger_server(manual_trigger_state, log)
     log.info("Raspberry Pi runtime started")
     last_sent_signature = None
-
+ 
     try:
         while True:
-            time.sleep(INGEST_INTERVAL_SECONDS)
+            manual_trigger = manual_trigger_state.wait(timeout_seconds=INGEST_INTERVAL_SECONDS)
             sensor_data = shared_state.get("sensor")
             vision_data = shared_state.get("vision")
             if sensor_data is None or vision_data is None:
@@ -180,9 +269,11 @@ def main():
                 vision_data.get("timestamp"),
                 tuple(obj.get("label") for obj in vision_data.get("detected_objects", [])),
             )
-            if signature == last_sent_signature:
+            if signature == last_sent_signature and manual_trigger is None:
                 continue
-
+            if manual_trigger:
+                log.info("Manual run requested by source=%s", manual_trigger.get("source"))
+ 
             debug = sensor_data.get("debug", {})
             mq3_value = _first_non_none(debug, ["mq3_model_value", "mq3_gas_value", "mq3", "mq3_raw_ads"])
             mq135_value = _first_non_none(
@@ -196,7 +287,7 @@ def main():
                     mq135_value,
                     sorted(debug.keys()),
                 )
-
+ 
             payload = {
                 "user_id": SUPABASE_USER_ID,
                 "sensor": {
@@ -208,7 +299,7 @@ def main():
                 "detected_items": build_detected_items(vision_data, storage),
                 "captured_at": datetime.now(timezone.utc).isoformat(),
             }
-
+ 
             if db:
                 try:
                     sensor_db = {
@@ -229,7 +320,7 @@ def main():
                     log.info("DB sync complete: items=%s notifications=%s", len(food_item_ids), len(notifications))
                 except Exception as ex:
                     log.exception("DB sync failed: %s", ex)
-
+ 
             if API_FORWARD_ENABLED:
                 try:
                     response = requests.post(API_URL, json=payload, timeout=20)
@@ -237,7 +328,7 @@ def main():
                     log.info("API forward OK status=%s", response.status_code)
                 except Exception as ex:
                     log.exception("API forward failed: %s", ex)
-
+ 
             last_sent_signature = signature
     except KeyboardInterrupt:
         log.info("Stopped by user")
@@ -245,7 +336,7 @@ def main():
         if db:
             db.close()
             log.info("DB connection closed")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
